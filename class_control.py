@@ -1,10 +1,9 @@
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from pprint import pprint
-from secrets import fcaq_pass, fcaq_email
 from tkinter import messagebox
 from tkcalendar import Calendar
-import os, pickle, gspread, yagmail, datetime, tkinter, sys
+import os, pickle, yagmail, datetime, tkinter, sys, csv
 
 
 #######################################
@@ -19,11 +18,16 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-class ClassroomControl:
+class CSVerror(Exception):
     def __init__(self):
+        super().__init__()
+
+
+class ClassroomControl:
+    def __init__(self, mail_username, mail_password, viceprincipal):
         def init_email():
             try:
-                yag_temp = yagmail.SMTP(user=fcaq_email, password=fcaq_pass)
+                yag_temp = yagmail.SMTP(user=mail_username, password=mail_password)
             except:
                 print("E mail connection was not possible!")
             else:
@@ -38,8 +42,6 @@ class ClassroomControl:
                 "https://www.googleapis.com/auth/classroom.rosters.readonly",
                 "https://www.googleapis.com/auth/classroom.coursework.students",
                 "https://www.googleapis.com/auth/classroom.profile.emails",
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
             ],
         )
         self.yag_service = None
@@ -51,6 +53,8 @@ class ClassroomControl:
         self.coursework_rep = {}
         self.report_coursework = {}
         self.creds = None
+        self.vice = viceprincipal
+        # Creates the service to connect with the Gmail account
         self.yag_service = init_email()
         # Creates the service to connect with the API
         self.create_service(self.get_access_token())
@@ -59,19 +63,22 @@ class ClassroomControl:
         # Gets students
         self.get_students(self.courses)
         # Gets guardians
-        self.get_guardians(self.students, self.courses)
+        self.init_guardians_csv()
+        self.get_guardians()
 
     # IMPROVEMENT: USE THE REFRESH TOKEN
     def get_access_token(self):
-        if os.path.exists("creds.pickle"):
-            with open("creds.pickle", "rb") as file:
+        if os.path.exists(os.path.join("bin", "creds.pickle")):
+            with open(os.path.join("bin", "creds.pickle"), "rb") as file:
                 self.creds = pickle.load(file)
         else:
+            if not os.path.exists("bin"):
+                os.mkdir("bin")
             # This will run a local server to grant access:
             self.flow.run_local_server(
                 port=8080, prompt="consent", authorization_prompt_message=""
             )
-            with open("creds.pickle", "wb") as file:
+            with open(os.path.join("bin", "creds.pickle"), "wb") as file:
                 pickle.dump(self.flow.credentials, file)
             self.creds = self.flow.credentials
         return self.creds
@@ -81,7 +88,6 @@ class ClassroomControl:
         self.service = build("classroom", "v1", credentials=creds)
         """Once the end-user has authorized access to the chosen scopes, the authorization can be used to authorize 
         the gspread access ALSO! """
-        self.client = gspread.authorize(creds)
 
     # This will get all the current courses based on the courseState and the section name
     # GENERALIZATION HERE, HOW CAN I FILTER THE COURSES BETTER?
@@ -96,8 +102,8 @@ class ClassroomControl:
     # This will get the students for each course
     # GENERALIZATION HERE, WHAT HAPPENS IF THERE ARE MORE THAN 30 STUDENTS?
     def get_students(self, courses_dict):
-        if os.path.exists("students.pickle"):
-            with open("students.pickle", "rb") as file:
+        if os.path.exists(os.path.join("bin", "students.pickle")):
+            with open(os.path.join("bin", "students.pickle"), "rb") as file:
                 self.students = pickle.load(file)
                 print("self.students has been loaded")
         else:
@@ -116,51 +122,86 @@ class ClassroomControl:
                     if course_id not in self.students.keys():
                         self.students[course_id] = {}
                     self.students[course_id].setdefault(student_id, [email, name])
-            with open("students.pickle", "wb") as file:
+            if not os.path.exists("bin"):
+                os.mkdir("bin")
+            with open(os.path.join("bin", "students.pickle"), "wb") as file:
                 pickle.dump(self.students, file)
                 print("self.students has been dumped")
-        # pprint(self.students)
+        pprint(self.students)
 
     """Guardians are only available for administrators and I am not an administrator, so no possible fetch of the 
     guardians coming from the API can be done. 
     That's why I have to fetch the guardians from the Google Spreadsheet."""
 
-    def get_guardians(self, students_dict, courses_dict):
-        # ASSUMPTION: The course name has a format with a letter designating each course, example: 9EGB E - Design
-        def get_parallel(course):
-            temp = courses_dict[course].split()
-            for element in temp:
-                if len(element) == 1 and element.isalpha():
-                    print(f"{element} will be returned")
-                    return element
+    def init_guardians_csv(self):
+        def create_csv_file(course_id):
+            if not os.path.exists("classes"):
+                os.mkdir("classes")
+            if not os.path.exists(os.path.join("classes", self.courses[course_id] + ".csv")):
+                with open(os.path.join("classes", self.courses[course_id] + ".csv"), "wt") as file:
+                    csv_writer = csv.writer(file, dialect="unix")
+                    # CREATION OF HEADERS
+                    csv_writer.writerow(["Student", "Guardians"])
+                    # WRITING STUDENTS' EMAILS
+                    for student_id in self.students[course_id]:
+                        temp_dict_to_sort.setdefault(
+                            " ".join(self.students[course_id][student_id][1]),
+                            self.students[course_id][student_id][0],
+                        )
+                    for last_name in sorted(temp_dict_to_sort.keys()):
+                        print(f"THIS WILL BE WRITTEN: {[temp_dict_to_sort[last_name]]}")
+                        csv_writer.writerow([temp_dict_to_sort[last_name]])
 
-        ###################################
-        if os.path.exists("guardians.pickle"):
-            with open("guardians.pickle", "rb") as file:
+        for course in self.courses.keys():
+            ###################################
+            temp_dict_to_sort = {}
+            create_csv_file(course)
+            ###################################
+
+    def get_guardians(self):
+        def find_student_id(student_email):
+            for key in self.students[course_id]:
+                if self.students[course_id][key][0] == student_email:
+                    return key
+
+        # Check for pickle file:
+        if os.path.exists(os.path.join("bin", "guardians.pickle")):
+            with open (os.path.join("bin", "guardians.pickle"), "rb") as file:
                 self.guardians = pickle.load(file)
-                print(f"self.guardians has been loaded")
+        # Pickle file does not exist so the guardians should be loaded from the classes CSV files
         else:
-            sheet = self.client.open("Students contact information")
-            for course in students_dict.keys():
-                # Get the spreadsheet for the given course:
-                sheet_temp = sheet.worksheet(get_parallel(course))
-                # Gets the whole range of  values student - guardians
-                values_temp = sheet_temp.get_all_values()
-                # print(values_temp)
-                for row in values_temp:
-                    if "@" not in row[0]:
-                        continue
-                    else:
-                        student_email = row[0]
-                        guardian_temp = row[1].split()
-                        guardian_emails = []
-                        for i in guardian_temp:
-                            guardian_emails.append(i.strip().strip(","))
-                        self.guardians.setdefault(student_email, guardian_emails)
-            with open("guardians.pickle", "wb") as file:
+            for course_id in self.courses.keys():
+                self.guardians.setdefault(course_id, {})
+                print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+                print(self.courses[course_id])
+                with open(os.path.join("classes", self.courses[course_id] + ".csv"), "rt") as file:
+                    csv_reader = csv.reader(file)
+                    for row_number, row in enumerate(csv_reader):
+                        # Skips the header
+                        if row_number == 0:
+                            continue
+                        # For all the other elements:
+                        student_id = find_student_id(row[0])
+                        if len(row)==2:
+                            # Look for the emails in the following format guardian1@somewhere.com, guardian2@somewhereelse.com
+                            if len(row[1]) > 1:
+                                guardian_emails = row[1].split(",")
+                                guardian_emails = list(map(lambda mail: mail.strip(), guardian_emails))
+                                for guardian_email in guardian_emails:
+                                    if "@" in guardian_email:
+                                        if student_id not in self.guardians[course_id].keys():
+                                            self.guardians[course_id][student_id] = []
+                                            self.guardians[course_id][student_id].append(guardian_email)
+                                        else:
+                                            self.guardians[course_id][student_id].append(guardian_email)
+                                    else:
+                                        messagebox.showerror(f"Guardian email error in {self.courses[course_id]}.csv", f"There is an error in the following email: '{row[1]}'. A valid email should have the following format: name@something.com")
+                        else:
+                            self.guardians[course_id][student_id]=[]
+            with open (os.path.join("bin", "guardians.pickle"), "wb") as file:
                 pickle.dump(self.guardians, file)
-                print("self.guardians has been dumped")
-        # pprint(self.guardians)
+            # print("self.guardians =")
+        pprint(self.guardians)
 
     def get_missed_coursework(self, course_choice):
         request = self.service.courses().courseWork().list(courseId=course_choice)
@@ -284,6 +325,7 @@ class ClassroomControl:
     student: string. Student Id.
     """
 
+    # Fix viceprincipals emails
     def send_mails(self, type, who, course, preview_send):
         # This configures the email that will be sent individually to each student
         def config_message(student):
@@ -390,6 +432,7 @@ class MainApplication(tkinter.Frame):
         self.bg = "gray15"
         self.bg2 = "gray80"
         self.bg3 = "RoyalBlue4"
+        self.bg4 = "green"
         self.fg = "white"
         self.main_window = tkinter.Frame(master)
         self.main_window.configure(bg=self.bg)
@@ -400,6 +443,9 @@ class MainApplication(tkinter.Frame):
         self.addressees.set("STUDENT")
         self.preview_or_send = tkinter.StringVar(self.main_window)
         self.preview_or_send.set("PREVIEW")
+        self.gmail_user = ""
+        self.gmail_pw = ""
+        self.viceprincipal = []
         self.date_init = datetime.datetime.now()
         self.date_final = datetime.datetime.now()
         ############################
@@ -418,6 +464,7 @@ class MainApplication(tkinter.Frame):
         self.frame31.configure(bg=self.bg)
         self.frame32.configure(bg=self.bg)
         self.frame33.configure(bg=self.bg)
+        self.frame34.configure(bg=self.bg2)
         ############################
         self.title = tkinter.Label(
             self.frame1,
@@ -520,8 +567,99 @@ class MainApplication(tkinter.Frame):
             fg=self.fg,
         )
         ############################
-        self.cc = ClassroomControl()
+        self.get_user_information()
+        self.cc = ClassroomControl(self.gmail_user, self.gmail_pw, self.viceprincipal)
         self.display_elements()
+
+    def get_user_information(self):
+        if os.path.exists(os.path.join("bin", "user_info.pickle")):
+            with open(os.path.join("bin", "user_info.pickle"), "rb") as file:
+                temp_load = pickle.load(file)
+                self.gmail_user = temp_load["user"]
+                self.gmail_pw = temp_load["pass"]
+                self.viceprincipal = temp_load["vice"]
+                print(f"Data has been loaded successfully!: {temp_load}")
+        else:
+            if os.path.exists("User_data.csv"):
+                dicc_temp = {}
+                with open("user_data.csv", "rt") as file:
+                    csv_file = csv.reader(file)
+                    try:
+                        for number, line in enumerate(csv_file):
+                            if number == 0:
+                                if line[0] == "Gmail user":
+                                    if len(line) == 2:
+                                        if len(line[1]) > 1:
+                                            self.gmail_user = line[1].strip()
+                                            dicc_temp.setdefault(
+                                                "user", self.gmail_user
+                                            )
+                                        else:
+                                            raise AssertionError
+                                    else:
+                                        raise AssertionError
+                                else:
+                                    raise CSVerror
+                            elif number == 1:
+                                if line[0] == "Gmail password":
+                                    if len(line) == 2:
+                                        if len(line[1]) > 1:
+                                            self.gmail_pw = line[1].strip()
+                                            dicc_temp.setdefault("pass", self.gmail_pw)
+                                        else:
+                                            raise AssertionError
+                                    else:
+                                        raise AssertionError
+                                else:
+                                    raise CSVerror
+                            elif number == 2:
+                                if line[0] == "Other stakeholders":
+                                    if len(line) == 2:
+                                        if len(line[1]) > 1:
+                                            if "," in line[1]:
+                                                temp = line[1].split(",")
+                                                for mail in temp:
+                                                    self.viceprincipal.append(
+                                                        mail.strip()
+                                                    )
+                                            else:
+                                                self.viceprincipal.append(line[1])
+                                            dicc_temp.setdefault(
+                                                "vice", self.viceprincipal
+                                            )
+                                        else:
+                                            raise AssertionError
+                                    else:
+                                        raise AssertionError
+                                else:
+                                    raise CSVerror
+                    except AssertionError:
+                        print(
+                            "It seems that you have not uploaded the user information in 'user_data.csv'. Please make sure the cells are not empty before you run the program again."
+                        )
+                        messagebox.showerror(
+                            "Fatal CSV error.",
+                            "It seems that you have not uploaded the user information in 'user_data.csv'. Please make sure the cells are not empty before you run the program again.",
+                        )
+                        sys.exit()
+                    except CSVerror:
+                        print(
+                            "There was an error with the CSV file. Please download it again and check that the format is correct."
+                        )
+                        messagebox.showerror(
+                            "Fatal CSV error.",
+                            "There was an error with 'user_data.csv' file.",
+                        )
+                        sys.exit()
+                    else:
+                        pprint(dicc_temp)
+                        if not os.path.exists("bin"):
+                            os.mkdir("bin")
+                        with open(
+                            os.path.join("bin", "user_info.pickle"), "wb"
+                        ) as file:
+                            pickle.dump(dicc_temp, file)
+                            print("Pickle file saved successfully.")
 
     def display_elements(self):
         self.main_window.grid(row=0, column=0)
@@ -558,7 +696,7 @@ class MainApplication(tkinter.Frame):
         self.rb_preview.grid(row=0, column=0)
         self.rb_send.grid(row=0, column=1)
         ############################
-        self.button_run.grid(row=0, column=0)
+        self.button_run.grid(row=0, column=1)
 
     def get_initial_final_date_to_report(self, course_key):
         def get_dates():
@@ -690,7 +828,8 @@ class MainApplication(tkinter.Frame):
                     )
                 message = f"You will {self.preview_or_send.get()} a {self.type_of_report.get()} report for class '{self.classes_listbox.get(tkinter.ANCHOR)}'{message_send}.\n\nIs it OK?"
                 if messagebox.askokcancel(
-                        f"Google Classroom Grade reports. - {self.type_of_report.get()} tasks.", message
+                    f"Google Classroom Grade reports. - {self.type_of_report.get()} tasks.",
+                    message,
                 ):
                     self.cc.get_missed_coursework(course_key)
                     self.cc.send_mails(
@@ -708,7 +847,6 @@ class MainApplication(tkinter.Frame):
                 self.get_initial_final_date_to_report(course_key)
 
 
-
 if __name__ == "__main__":
     root = tkinter.Tk()
     root.title("Google Classroom Grade reports.")
@@ -716,4 +854,3 @@ if __name__ == "__main__":
     root.iconbitmap(resource_path("icon.ico"))
     app = MainApplication(root)
     root.mainloop()
-

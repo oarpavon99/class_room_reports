@@ -40,14 +40,21 @@ Check out the Youtube video for an explanation of how the project works.
                 "https://www.googleapis.com/auth/drive"
         * Create Credentials (OAuth client ID, Application type: Desktop App). This will create client ID credentials that will be used in an OAuth authorization workflow.
         * SAVE the created JSON file as `creds_00.json` in the same directory as the code.    
-    This file will also be used to access the Google Sheet with the students email and guardian information. 
-
+    This file will also be used to access the Google Sheet with the students email and guardian information.
+          
 ## Usage
 
 Finally, you have 2 options to run the script:
 
 * The first one is to run the `class_control.py` file attached in any IDE. 
 * The second one is to run the `class_control.exe` file.
+
+0. Before you run the program, you must fill in the attached `user_data.csv` with your user information:
+   * Google Sheet Name. This is the name of the Google Sheet with the guardians information. The format should be:
+    ![Google Sheet Format](IMAGES/image_002.png)
+     
+    * Gmail user and password. These are used to send the reports from your school email account. 
+    
 
 1. The first time you run the program you must grant READ access to your Google Classroom data. No user data will be stored and this is assured by the OAuth 2.0 protocol.
 Make sure you are logged in to your school account.
